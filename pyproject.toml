@@ -1,0 +1,17 @@
+[project]
+name = "dux_cybervidya"
+authors = [
+    { name = "Dux DigiTech", email = "aditya@duxdigitech.com" }
+]
+description = "ERPNext receiver for CyberVidya end-of-day fee collection: one aggregated, auto-submitted Journal Entry per (company, channel, date)."
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.flit.module]
+name = "dux_cybervidya"

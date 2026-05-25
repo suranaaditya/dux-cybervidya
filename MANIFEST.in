@@ -1,0 +1,18 @@
+include MANIFEST.in
+include requirements.txt
+include *.json
+include *.md
+include *.py
+include *.txt
+recursive-include dux_cybervidya *.css
+recursive-include dux_cybervidya *.csv
+recursive-include dux_cybervidya *.html
+recursive-include dux_cybervidya *.ico
+recursive-include dux_cybervidya *.js
+recursive-include dux_cybervidya *.json
+recursive-include dux_cybervidya *.md
+recursive-include dux_cybervidya *.png
+recursive-include dux_cybervidya *.py
+recursive-include dux_cybervidya *.svg
+recursive-include dux_cybervidya *.txt
+recursive-exclude dux_cybervidya *.pyc

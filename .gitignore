@@ -1,0 +1,11 @@
+.DS_Store
+*.pyc
+__pycache__/
+*.egg-info/
+.venv/
+node_modules/
+*.swp
+.idea/
+.vscode/
+build/
+dist/
