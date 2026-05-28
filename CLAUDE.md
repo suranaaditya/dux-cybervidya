@@ -201,6 +201,18 @@ This DocType is the destination for the CyberVidya mapping worksheet: parent row
 - **Primary:** `custom_cybervidya_ref` unique DB constraint. Read-then-create, but treat
   the **duplicate-key insert error** as authoritative — catch it, fetch the existing JE,
   return `already_exists`. This closes the read→write race window.
+- **The idempotency check only counts ACTIVE (docstatus=1) JEs.** A cancelled JE has
+  zero ledger impact, so a retry of the same reference must be allowed to create a
+  fresh JE. To make this work with the unique DB constraint:
+  - `Journal Entry.on_cancel` hook (`utils.on_journal_entry_cancel`) automatically
+    suffixes the cancelled JE's `custom_cybervidya_ref` with `__CANCELLED__<JE-name>`.
+    This releases the original reference for re-posting while preserving an audit link
+    on the cancelled JE.
+  - The endpoint also runs `utils.free_cancelled_ref_holder` before every insert as a
+    safety net (handles JEs cancelled before the hook existed, or hook-failure cases).
+  - Cancelled-then-suffixed JEs are still searchable for audit: a list-view filter
+    on `custom_cybervidya_ref LIKE '<ref>%'` returns both the cancelled record and
+    the new active record for that reference.
 - **Secondary (derived server-side, needs nothing from CyberVidya):** natural key
   `company + collection_type + ledger + posting_date` — sanity check / reconciliation only.
 - v16 immutable ledger: a submitted JE can only be cancelled+reversed, never edited — which

@@ -13,3 +13,11 @@ fixtures = [
         ],
     },
 ]
+
+# When a CyberVidya-posted JE is cancelled (in the UI or programmatically),
+# free its idempotency reference so CyberVidya can retry. See utils.py.
+doc_events = {
+    "Journal Entry": {
+        "on_cancel": "dux_cybervidya.api.utils.on_journal_entry_cancel",
+    },
+}

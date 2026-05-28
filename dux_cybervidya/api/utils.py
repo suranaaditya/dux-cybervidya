@@ -19,6 +19,11 @@ CASH_HEAD_TEMPLATE = "Cash Cyber Vidhya - {abbr}"
 
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Marker we append to custom_cybervidya_ref when a JE is cancelled, so the
+# original reference becomes free for CyberVidya to re-post. The cancelled
+# JE keeps the suffixed reference (preserves the audit link).
+CANCELLED_REF_MARKER = "__CANCELLED__"
+
 
 class CyberVidyaRejection(Exception):
     """Raised when a payload cannot be turned into a JE. Carries a
@@ -225,6 +230,63 @@ def build_and_submit_je(
     je.insert(ignore_permissions=False)
     je.submit()
     return je.name
+
+
+# ---------------------------------------------------------------------------
+# Cancel hook — free idempotency reference when a CV-posted JE is cancelled
+# ---------------------------------------------------------------------------
+
+def on_journal_entry_cancel(doc, method=None):
+    """Doc-event hook bound to Journal Entry.on_cancel via hooks.py.
+
+    A cancelled JE has zero ledger impact — it is effectively absent from the
+    books. To allow CyberVidya to retry the same logical collection (which
+    would otherwise be permanently blocked by the unique constraint on
+    custom_cybervidya_ref), we suffix the cancelled JE's reference with
+    __CANCELLED__<jename>. This frees the original reference for re-posting
+    while preserving an audit link from the cancelled JE.
+
+    No-op on JEs that were not posted by CyberVidya, or whose reference is
+    already suffixed.
+    """
+    ref = doc.get("custom_cybervidya_ref")
+    if not ref or CANCELLED_REF_MARKER in ref:
+        return
+    new_ref = f"{ref}{CANCELLED_REF_MARKER}{doc.name}"
+    try:
+        # db_set bypasses document-level validation (cancelled docs are frozen)
+        # and writes directly to the DB; we also do NOT bump modified to avoid
+        # cluttering audit logs.
+        doc.db_set("custom_cybervidya_ref", new_ref, update_modified=False)
+    except Exception as e:
+        frappe.log_error(
+            message=(
+                f"Failed to suffix custom_cybervidya_ref on cancel of "
+                f"{doc.name} (original ref: {ref!r}): {type(e).__name__}: {e}"
+            ),
+            title="CyberVidya: on_cancel hook failed",
+        )
+
+
+def free_cancelled_ref_holder(reference: str) -> Optional[str]:
+    """Pre-insert safety net: if a CANCELLED JE still holds this reference
+    (e.g., it was cancelled before the on_cancel hook existed, or the hook
+    crashed), suffix it so the reference becomes free. Returns the suffixed
+    name if we modified anything, else None.
+    """
+    holder = frappe.db.get_value(
+        "Journal Entry",
+        {"custom_cybervidya_ref": reference, "docstatus": 2},
+        "name",
+    )
+    if not holder:
+        return None
+    new_ref = f"{reference}{CANCELLED_REF_MARKER}{holder}"
+    frappe.db.set_value(
+        "Journal Entry", holder, "custom_cybervidya_ref", new_ref,
+        update_modified=False,
+    )
+    return holder
 
 
 # ---------------------------------------------------------------------------

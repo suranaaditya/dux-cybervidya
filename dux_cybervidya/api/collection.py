@@ -13,6 +13,7 @@ from dux_cybervidya.api.utils import (
     build_and_submit_je,
     derive_cash_head,
     derive_receivable_head,
+    free_cancelled_ref_holder,
     resolve_bank_ledger,
     resolve_company,
     send_rejection_alert,
@@ -31,8 +32,14 @@ def post_daily_collection(**kwargs):
 
     reference = payload["reference"]
 
+    # Idempotency: only ACTIVE (docstatus=1) JEs count as "already exists".
+    # Cancelled JEs (docstatus=2) have zero ledger impact, so a retry should
+    # be allowed to create a fresh JE. See utils.on_journal_entry_cancel
+    # which suffixes the cancelled JE's ref to release the unique constraint.
     existing = frappe.db.get_value(
-        "Journal Entry", {"custom_cybervidya_ref": reference}, "name"
+        "Journal Entry",
+        {"custom_cybervidya_ref": reference, "docstatus": 1},
+        "name",
     )
     if existing:
         return {
@@ -40,6 +47,14 @@ def post_daily_collection(**kwargs):
             "journal_entry": existing,
             "reference": reference,
         }
+
+    # Safety net: if a CANCELLED JE still holds this reference (e.g. it was
+    # cancelled before the on_cancel hook existed, or the hook crashed),
+    # suffix it now so the unique constraint releases. The hook handles new
+    # cancellations automatically; this only kicks in for legacy/stale data.
+    freed = free_cancelled_ref_holder(reference)
+    if freed:
+        frappe.db.commit()  # release the index entry before our insert
 
     try:
         company = resolve_company(payload["institution"])
@@ -71,15 +86,30 @@ def post_daily_collection(**kwargs):
 
     except (frappe.UniqueValidationError, frappe.DuplicateEntryError):
         frappe.db.rollback()
-        existing = frappe.db.get_value(
-            "Journal Entry", {"custom_cybervidya_ref": reference}, "name"
+        # Re-read the holder to decide what to return.
+        holder = frappe.db.get_value(
+            "Journal Entry",
+            {"custom_cybervidya_ref": reference},
+            ["name", "docstatus"],
+            as_dict=True,
         )
-        if existing:
+        if holder and holder.docstatus == 1:
             return {
                 "status": "already_exists",
-                "journal_entry": existing,
+                "journal_entry": holder.name,
                 "reference": reference,
             }
+        if holder and holder.docstatus == 2:
+            # Cancelled JE still holds the ref (race with cancellation, or
+            # the on_cancel hook hasn't run). Surface a precise rejection so
+            # the operator can investigate; do NOT silently suffix here to
+            # avoid masking deeper concurrency issues.
+            return _reject(
+                reference,
+                f"Reference is held by a cancelled Journal Entry ({holder.name}). "
+                f"Retry once the on_cancel hook has freed the reference.",
+                kwargs,
+            )
         return _reject(
             reference,
             "Duplicate reference race lost but no matching JE found on re-read.",
