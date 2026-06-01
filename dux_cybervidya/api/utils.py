@@ -15,6 +15,7 @@ from frappe.utils import flt, getdate
 
 
 RECEIVABLE_HEAD_TEMPLATE = "Student Receivable Cybervidya - {abbr}"
+PAYABLE_HEAD_TEMPLATE = "Student Payable Cybervidya - {abbr}"
 CASH_HEAD_TEMPLATE = "Cash Cyber Vidhya - {abbr}"
 
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -134,6 +135,13 @@ def resolve_bank_ledger(institution_code: str, bank_code: str, company: str) -> 
 def derive_receivable_head(company: str) -> str:
     abbr = _company_abbr(company)
     head = RECEIVABLE_HEAD_TEMPLATE.format(abbr=abbr)
+    assert_leaf(head, company)
+    return head
+
+
+def derive_payable_head(company: str) -> str:
+    abbr = _company_abbr(company)
+    head = PAYABLE_HEAD_TEMPLATE.format(abbr=abbr)
     assert_leaf(head, company)
     return head
 

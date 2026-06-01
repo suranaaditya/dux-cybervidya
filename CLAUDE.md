@@ -109,6 +109,27 @@ Rules:
     either way, but the year-end JE logic may need to know which side this lives on.
     Worth a sweep of all 59 companies before go-live.
 
+### Refund channels (mirror of collections — see §6 `post_daily_refund`)
+
+One Journal Entry per **(company, channel, date)**, money flowing FROM RGI Group
+BACK TO students. One CyberVidya refund record = one request = one JE.
+
+| Channel | Debit (Dr) | Credit (Cr) |
+|---|---|---|
+| Bank refund | `Student Payable Cybervidya - {ABBR}` | `{mapped bank leaf ledger}` |
+| Cash refund | `Student Payable Cybervidya - {ABBR}` | `Cash Cyber Vidhya - {ABBR}` |
+
+**Exact account-name string — use VERBATIM:**
+
+- Debit head: `Student Payable Cybervidya - {ABBR}` (one word `Cybervidya`, no "h" —
+  matches the existing Receivable convention).
+- The Payable head is classified under **Current Liabilities** (preferred,
+  accounting-correct: it's a liability owed to students until paid out). The same
+  Asset-vs-Liability open question flagged for the Receivable head (§3 above,
+  §12.6) applies symmetrically here — sweep all 59 companies before go-live.
+- The CyberVidya Account Mapping rows and the bank/cash leaves are
+  **direction-agnostic**; no DocType change is needed for refunds.
+
 ---
 
 ## 4. Custom field on Journal Entry (idempotency key)
@@ -156,8 +177,12 @@ This DocType is the destination for the CyberVidya mapping worksheet: parent row
 
 ## 6. Endpoint
 
-- Whitelisted method: **`dux_cybervidya.api.collection.post_daily_collection`**
-  (confirm final path; share it with CyberVidya with the credentials).
+- Whitelisted methods (share both with CyberVidya with the credentials):
+  - **`dux_cybervidya.api.collection.post_daily_collection`** — money IN from students.
+  - **`dux_cybervidya.api.refund.post_daily_refund`** — money OUT to students.
+    Accounting mirror of collection; same payload shape, same response envelope,
+    same idempotency mechanics, same auth, same alerts. See §3 refund table for
+    the Dr/Cr swap.
 - Auth: a **dedicated integration user** (NOT System Manager) with a tightly-scoped
   custom role. API key + secret in header: `Authorization: token <key>:<secret>`. HTTPS only.
 
