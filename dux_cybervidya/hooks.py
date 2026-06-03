@@ -12,6 +12,20 @@ fixtures = [
             ["name", "in", ["Journal Entry-custom_cybervidya_ref"]],
         ],
     },
+    {
+        "doctype": "Role",
+        "filters": [
+            ["name", "in", ["CyberVidya Viewer"]],
+        ],
+    },
+    # Read-only Journal Entry access for the CyberVidya Viewer role so the
+    # dashboard endpoints (guarded on Journal Entry read) work for that role.
+    {
+        "doctype": "Custom DocPerm",
+        "filters": [
+            ["role", "in", ["CyberVidya Viewer"]],
+        ],
+    },
 ]
 
 # When a CyberVidya-posted JE is cancelled (in the UI or programmatically),
@@ -21,3 +35,7 @@ doc_events = {
         "on_cancel": "dux_cybervidya.api.utils.on_journal_entry_cancel",
     },
 }
+
+# Refresh the dashboard's institution<->company<->abbr cache after migrate
+# (mappings may have changed).
+after_migrate = ["dux_cybervidya.api.dashboard.refresh_maps"]
