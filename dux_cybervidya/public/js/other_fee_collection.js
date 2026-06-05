@@ -33,7 +33,15 @@
 	}
 	function esc(s) { return frappe.utils.escape_html(s == null ? "" : String(s)); }
 	function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : (s || ""); }
-	function prettyDT(dt) { return (dt || "").replace("T", " ").slice(0, 16); }
+	var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+	function fmtDate(iso) {            // 'YYYY-MM-DD' -> Indian 'DD-MM-YYYY'
+		if (!iso) return "";
+		var p = String(iso).slice(0, 10).split("-");
+		return p.length === 3 ? p[2] + "-" + p[1] + "-" + p[0] : String(iso);
+	}
+	function ddmm(iso) { var p = String(iso).slice(0, 10).split("-"); return p.length === 3 ? p[2] + "-" + p[1] : String(iso); }
+	function fmtMonth(ym) { var p = String(ym).split("-"); return p.length >= 2 ? (MON[(+p[1]) - 1] + " " + p[0]) : String(ym); }
+	function prettyDT(dt) { if (!dt) return ""; var s = String(dt); return fmtDate(s.slice(0, 10)) + " " + s.slice(11, 16); }
 	function $(sel) { return ROOT.querySelector(sel); }
 
 	function call(method, extra, flt) {
@@ -66,10 +74,6 @@
 		'     <div style="display:flex;align-items:center;gap:10px"><span class="hint" id="ofchart-hint"></span>' +
 		'       <div class="seg" id="ofgran"></div></div></div>' +
 		'     <div class="chartwrap"><canvas id="ofchart"></canvas></div></div>' +
-		'  <div class="card"><div class="card-h"><h3>Mix</h3><span class="hint">fee-head share &amp; bank vs cash</span></div>' +
-		'     <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:10px;padding:14px 20px">' +
-		'       <div style="height:230px;position:relative"><canvas id="ofmixhead"></canvas></div>' +
-		'       <div style="height:230px;position:relative"><canvas id="ofmixch"></canvas></div></div></div>' +
 		'  <div class="card"><div class="card-h"><h3>By sanstha</h3>' +
 		'     <button class="csvbtn" data-csv="sanstha" style="border:0;background:none;color:var(--accent);font-size:11.5px;cursor:pointer">⤓ CSV</button></div>' +
 		'     <div class="cvfade" id="ofsanstha"></div></div>' +
@@ -175,14 +179,14 @@
 	// -------------------------------------------------------------- trend chart (bucketed)
 	function weekMonday(ds) { var d = new Date(ds + "T00:00:00"); var off = (d.getDay() + 6) % 7; d.setDate(d.getDate() - off); return d.toISOString().slice(0, 10); }
 	function bucketDaily(daily, gran) {
-		if (gran === "day") return daily.map(function (r) { return { label: r.date.slice(5), total: r.total }; });
+		if (gran === "day") return daily.map(function (r) { return { label: ddmm(r.date), total: r.total }; });
 		var map = {};
 		daily.forEach(function (r) {
 			var k = gran === "week" ? weekMonday(r.date) : r.date.slice(0, 7);
 			(map[k] = map[k] || { total: 0 }).total += r.total;
 		});
 		return Object.keys(map).sort().map(function (k) {
-			return { label: gran === "week" ? ("wk " + k.slice(5)) : k, total: map[k].total };
+			return { label: gran === "week" ? ("wk " + ddmm(k)) : fmtMonth(k), total: map[k].total };
 		});
 	}
 	function renderGran() {
@@ -195,7 +199,7 @@
 	}
 	function renderChart(daily) {
 		var rows = bucketDaily(daily || [], state.granularity);
-		$("#ofchart-hint").textContent = (daily && daily.length) ? (daily[0].date + " → " + daily[daily.length - 1].date) : "";
+		$("#ofchart-hint").textContent = (daily && daily.length) ? (fmtDate(daily[0].date) + " → " + fmtDate(daily[daily.length - 1].date)) : "";
 		mkChart("ofchart", {
 			type: "bar",
 			data: { labels: rows.map(function (r) { return r.label; }), datasets: [{ label: "Collected", data: rows.map(function (r) { return r.total; }), backgroundColor: "#059669", borderRadius: 3 }] },
@@ -207,26 +211,6 @@
 					y: { ticks: { callback: function (v) { return shortMoney(v); }, font: { size: 10 } }, grid: { color: "#eef1f4" } },
 				},
 			},
-		});
-	}
-
-	// -------------------------------------------------------------- mix (head bar + channel donut)
-	function renderMix(head, channel) {
-		var top = (head || []).slice(0, 8);
-		mkChart("ofmixhead", {
-			type: "bar",
-			data: { labels: top.map(function (r) { return r.fee_head || "—"; }), datasets: [{ data: top.map(function (r) { return r.total; }), backgroundColor: "#2563eb", borderRadius: 3 }] },
-			options: {
-				indexAxis: "y", responsive: true, maintainAspectRatio: false,
-				plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return money(c.parsed.x); } } } },
-				scales: { x: { ticks: { callback: function (v) { return shortMoney(v); }, font: { size: 9 } }, grid: { color: "#eef1f4" } }, y: { ticks: { font: { size: 10 } }, grid: { display: false } } },
-			},
-		});
-		var ch = {}; (channel || []).forEach(function (r) { ch[r.channel] = r.total; });
-		mkChart("ofmixch", {
-			type: "doughnut",
-			data: { labels: ["Bank", "Cash"], datasets: [{ data: [ch.bank || 0, ch.cash || 0], backgroundColor: ["#2563eb", "#d97706"], borderWidth: 0 }] },
-			options: { responsive: true, maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "bottom", labels: { font: { size: 11 }, boxWidth: 12 } }, tooltip: { callbacks: { label: function (c) { return c.label + ": " + money(c.parsed); } } } } },
 		});
 	}
 
@@ -245,7 +229,7 @@
 				'</span></td><td class="r g bold">' + money(r.total) + "</td>";
 			tr.onclick = function () { toggleExpand("sanstha", r.company); };
 			tb.appendChild(tr);
-			if (exp) tb.appendChild(expandRow("sanstha", r.company, "By college", ["College", "Sanstha", "Collected", "JEs"]));
+			if (exp) tb.appendChild(expandRow("sanstha", r.company, "By college", ["College", "Collected", "JEs"]));
 		});
 	}
 	function renderHead(rows) {
@@ -272,7 +256,7 @@
 				'</td><td class="r bold">' + money(r.total) + '</td><td class="r"><span class="jepill">' + r.count + "</span></td>";
 			tr.onclick = function () { toggleExpand("college", r.institution); };
 			tb.appendChild(tr);
-			if (exp) tb.appendChild(expandRow("college", r.institution, "By fee head", ["Fee head", "", "Collected", "JEs"]));
+			if (exp) tb.appendChild(expandRow("college", r.institution, "By fee head", ["Fee head", "Collected", "JEs"]));
 		});
 	}
 
@@ -286,7 +270,7 @@
 			'<div><h5>' + esc(key) + ' · daily</h5><div class="exp-chart"><canvas id="' + cid + '"></canvas></div>' +
 			'<div class="exp-link"><a data-jes="1">View all JEs in scope →</a></div></div>' +
 			'<div><h5>' + breakdownTitle + '</h5><table class="minitable"><thead><tr>' +
-			cols.map(function (c, i) { return '<th' + (i >= 2 ? ' class="r"' : "") + ">" + c + "</th>"; }).join("") +
+			cols.map(function (c, i) { return '<th' + (i >= 1 ? ' class="r"' : "") + ">" + c + "</th>"; }).join("") +
 			'</tr></thead><tbody id="expbreak_' + kind + '"><tr><td colspan="' + cols.length + '" class="muted" style="padding:10px">Loading…</td></tr></tbody></table></div></div>';
 		tr.appendChild(td);
 
@@ -294,12 +278,12 @@
 		call("daily", null, f).then(function (d) { drawMini(cid, d || []); });
 		if (kind === "sanstha") {
 			call("by_college", null, f).then(function (list) { fillBreak("expbreak_sanstha", (list || []).map(function (x) {
-				return [esc(x.institution), esc((x.sanstha || "").length > 18 ? "" : x.sanstha), money(x.total), x.count];
-			}), 4); });
+				return [esc(x.institution), money(x.total), x.count];
+			}), 3); });
 		} else {
 			call("by_fee_head", null, f).then(function (list) { fillBreak("expbreak_college", (list || []).map(function (x) {
-				return [esc(x.fee_head || "—"), "", money(x.total), x.count];
-			}), 4); });
+				return [esc(x.fee_head || "—"), money(x.total), x.count];
+			}), 3); });
 		}
 		setTimeout(function () {
 			var a = td.querySelector("[data-jes]");
@@ -314,14 +298,14 @@
 		var body = $("#" + id); if (!body) return;
 		if (!rowsArr.length) { body.innerHTML = '<tr><td colspan="' + ncol + '" class="muted" style="padding:10px">Nothing in scope.</td></tr>'; return; }
 		body.innerHTML = rowsArr.map(function (cells) {
-			return "<tr>" + cells.map(function (c, i) { return '<td' + (i >= 2 ? ' class="r mono"' : "") + ">" + c + "</td>"; }).join("") + "</tr>";
+			return "<tr>" + cells.map(function (c, i) { return '<td' + (i >= 1 ? ' class="r mono"' : "") + ">" + c + "</td>"; }).join("") + "</tr>";
 		}).join("");
 	}
 	function drawMini(cid, daily) {
 		var rows = daily || [];
 		mkChart(cid, {
 			type: "bar",
-			data: { labels: rows.map(function (d) { var p = d.date.split("-"); return (+p[2]) + "/" + (+p[1]); }), datasets: [{ data: rows.map(function (d) { return d.total; }), backgroundColor: "#059669", borderRadius: 2 }] },
+			data: { labels: rows.map(function (d) { return ddmm(d.date); }), datasets: [{ data: rows.map(function (d) { return d.total; }), backgroundColor: "#059669", borderRadius: 2 }] },
 			options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false }, tooltip: { enabled: false } }, scales: { x: { grid: { display: false }, ticks: { font: { size: 9 }, color: "#9ca3af", maxTicksLimit: 10, maxRotation: 0 } }, y: { grid: { color: "#f0f2f5" }, ticks: { font: { size: 9 }, color: "#9ca3af", callback: function (v) { return shortMoney(v); } } } } },
 		});
 	}
@@ -345,7 +329,7 @@
 				'<div class="tlrow1"><div class="tlmeta"><b>' + esc(r.institution || "—") + "</b> " + esc(r.fee_head || "") +
 				'<span class="ch">' + r.channel + " • " + r.source + "</span></div>" + amt + "</div>" +
 				'<div class="tlref">' + esc(r.ref) + " → " + esc(r.company) + "</div>" +
-				'<div class="tltime">' + esc(prettyDT(r.dt)) + " • " + esc(r.posting_date) + "</div>" + note + "</div></div>";
+				'<div class="tltime">' + esc(prettyDT(r.dt)) + " • " + esc(fmtDate(r.posting_date)) + "</div>" + note + "</div></div>";
 		}).join("");
 		host.innerHTML = '<div class="timeline">' + items + "</div>";
 		host.querySelectorAll(".tlitem").forEach(function (it) {
@@ -367,7 +351,7 @@
 		var canc = j.status === "Cancelled";
 		var link = "/app/journal-entry/" + encodeURIComponent(j.name);
 		return '<div class="jeentry"><div class="jedot tldot ' + (canc ? "x" : "c") + '" style="margin-top:6px"></div>' +
-			'<div style="flex:1;min-width:0"><div class="jdate">' + esc(prettyDT(j.dt)) + " • " + esc(j.posting_date) + "</div>" +
+			'<div style="flex:1;min-width:0"><div class="jdate">' + esc(prettyDT(j.dt)) + " • " + esc(fmtDate(j.posting_date)) + "</div>" +
 			'<div class="jref">' + esc(j.ref) + "</div>" +
 			'<div class="jch"><b>' + esc(j.institution || "—") + "</b> · " + esc(j.fee_head || "") + " · " + cap(j.channel) + " · " + cap(j.source) +
 			(canc ? ' · <span style="color:var(--cancel)">Cancelled</span>' : "") + "</div></div>" +
@@ -401,7 +385,7 @@
 	}
 
 	// -------------------------------------------------------------- exports
-	function rangeLabel() { return state.date_from + " → " + state.date_to; }
+	function rangeLabel() { return fmtDate(state.date_from) + " → " + fmtDate(state.date_to); }
 	function toCSV(rows) {
 		return rows.map(function (r) {
 			return r.map(function (c) {
@@ -449,14 +433,13 @@
 		loading(true);
 		Promise.all([
 			call("summary"), call("daily"), call("by_sanstha"), call("by_fee_head"),
-			call("by_channel"), call("reconcile"), call("feed"),
+			call("reconcile"), call("feed"),
 			call("summary", null, prevWindow()),
 		]).then(function (res) {
 			DATA.summary = res[0]; DATA.daily = res[1]; DATA.sanstha = res[2]; DATA.head = res[3];
-			DATA.channel = res[4]; DATA.recon = res[5]; DATA.feed = res[6]; DATA.prev = res[7];
+			DATA.recon = res[4]; DATA.feed = res[5]; DATA.prev = res[6];
 			renderSummary(DATA.summary, DATA.prev);
 			renderChart(DATA.daily);
-			renderMix(DATA.head, DATA.channel);
 			renderSanstha(DATA.sanstha);
 			renderHead(DATA.head);
 			renderCollege(DATA.recon);

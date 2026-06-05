@@ -367,6 +367,12 @@ def _rs(n):
     return f"{sign}Rs. {s}"
 
 
+def _dmy(iso):
+    """ISO 'YYYY-MM-DD' -> Indian 'DD-MM-YYYY'."""
+    p = str(iso)[:10].split("-")
+    return f"{p[2]}-{p[1]}-{p[0]}" if len(p) == 3 else str(iso)
+
+
 @frappe.whitelist()
 def other_fees_pdf(filters=None):
     """One-page summary PDF for the current filter scope. Opened directly as a
@@ -422,7 +428,7 @@ def other_fees_pdf(filters=None):
       .card .v {{ font-size:15px; font-weight:bold; font-family:monospace; }}
     </style>
     <h1>Other Fees / Sanstha Collection</h1>
-    <div class="sub">{f['date_from']} &rarr; {f['date_to']} &nbsp;|&nbsp; {scope_html}</div>
+    <div class="sub">{_dmy(f['date_from'])} &rarr; {_dmy(f['date_to'])} &nbsp;|&nbsp; {scope_html}</div>
     <div>
       <span class="card"><div class="k">Total</div><div class="v">{_rs(s['total'])}</div></span>
       <span class="card"><div class="k">JEs</div><div class="v">{s['count']}</div></span>
