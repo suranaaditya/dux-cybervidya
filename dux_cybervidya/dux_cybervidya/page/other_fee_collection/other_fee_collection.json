@@ -1,0 +1,30 @@
+{
+ "content": null,
+ "creation": "2026-06-05 00:00:00",
+ "docstatus": 0,
+ "doctype": "Page",
+ "icon": "fa fa-inr",
+ "idx": 0,
+ "modified": "2026-06-05 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Dux CyberVidya",
+ "name": "other-fee-collection",
+ "owner": "Administrator",
+ "page_name": "other-fee-collection",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Accounts User"
+  },
+  {
+   "role": "CyberVidya Viewer"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Other Fees / Sanstha Collection"
+}

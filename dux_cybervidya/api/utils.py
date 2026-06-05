@@ -18,6 +18,10 @@ RECEIVABLE_HEAD_TEMPLATE = "Student Receivable Cybervidya - {abbr}"
 PAYABLE_HEAD_TEMPLATE = "Student Payable Cybervidya - {abbr}"
 CASH_HEAD_TEMPLATE = "Cash Cyber Vidhya - {abbr}"
 
+# Income GROUP created per sanstha to hold the auto-created other-fee income
+# leaves (see api/other_fees.py and scripts/other_fees_import.py).
+OTHER_FEES_GROUP_TEMPLATE = "CyberVidya Other Fees - {abbr}"
+
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Marker we append to custom_cybervidya_ref when a JE is cancelled, so the
@@ -123,6 +127,55 @@ def validate_jv_payload(raw: dict) -> dict:
     }
 
 
+def validate_other_fees_payload(raw: dict) -> dict:
+    """Validate an 'other fees' payload. The fee head is credited to an INCOME
+    leaf in the college's parent SANSTHA company (resolved server-side), and the
+    bank/cash debit ledger also lives in that sanstha. Returns a normalised dict.
+
+    `bank_account_head` (CyberVidya's Account-Head nomenclature) is required for
+    a bank record; for cash it is optional (used to disambiguate when an
+    institution has more than one cash ledger)."""
+    reference = _require_str(raw, "reference")
+    institution = _require_str(raw, "institution")
+    fee_head = _require_str(raw, "fee_head")
+    collection_type = _require_str(raw, "collection_type").lower()
+    if collection_type not in ("bank", "cash"):
+        raise CyberVidyaRejection(
+            f"collection_type must be 'bank' or 'cash', got {collection_type!r}."
+        )
+
+    bank_account_head = (raw.get("bank_account_head") or "").strip() or None
+    if collection_type == "bank" and not bank_account_head:
+        raise CyberVidyaRejection(
+            "bank_account_head is required when collection_type is 'bank'."
+        )
+
+    amount = flt(raw.get("amount"))
+    if amount <= 0:
+        raise CyberVidyaRejection(f"amount must be > 0, got {raw.get('amount')!r}.")
+
+    collection_date = _require_str(raw, "collection_date")
+    if not ISO_DATE_RE.match(collection_date):
+        raise CyberVidyaRejection(
+            f"collection_date must be YYYY-MM-DD, got {collection_date!r}."
+        )
+    try:
+        getdate(collection_date)
+    except Exception:
+        raise CyberVidyaRejection(f"collection_date is not a valid date: {collection_date!r}.")
+
+    return {
+        "reference": reference,
+        "institution": institution,
+        "fee_head": fee_head,
+        "collection_type": collection_type,
+        "bank_account_head": bank_account_head,
+        "amount": amount,
+        "collection_date": collection_date,
+        "remarks": (raw.get("remarks") or None),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Resolvers
 # ---------------------------------------------------------------------------
@@ -189,6 +242,125 @@ def resolve_jv_account(jv_code: str, company: str) -> str:
     account = rows[0].account
     assert_leaf(account, company)
     return account
+
+
+def normalize_fee_label(s) -> str:
+    """Normalise a fee-head label for matching: NBSP -> space, collapse
+    whitespace, strip, lower-case. The CyberVidya Other Fee Head Map stores
+    labels in this form and the resolver cleans the incoming label the same
+    way, so case / spacing / typo-spacing differences across colleges match."""
+    return clean_jv_code(s).lower()
+
+
+def resolve_sanstha_company(institution_code: str) -> str:
+    """Resolve a college CV code to its parent TRUST/SANSTHA company via
+    CyberVidya Other Fees Mapping. Other-fee JEs are booked in the sanstha,
+    not the college. Miss -> reject."""
+    mapping_name = frappe.db.get_value(
+        "CyberVidya Other Fees Mapping",
+        {"cybervidya_institution": institution_code},
+        "name",
+    )
+    if not mapping_name:
+        raise CyberVidyaRejection(
+            f"No CyberVidya Other Fees Mapping for institution {institution_code!r}."
+        )
+    sanstha = frappe.db.get_value(
+        "CyberVidya Other Fees Mapping", mapping_name, "sanstha_company"
+    )
+    if not sanstha:
+        raise CyberVidyaRejection(
+            f"Other Fees Mapping for institution {institution_code!r} has no sanstha_company set."
+        )
+    return sanstha
+
+
+def resolve_fee_account(institution_code: str, fee_label: str, sanstha_company: str) -> str:
+    """Resolve (institution, fee label) to the shared INCOME leaf in the sanstha
+    via CyberVidya Other Fee Head Map child rows. Match on the normalised label.
+    Miss -> reject; never fall back to a default account."""
+    key = normalize_fee_label(fee_label)
+    rows = frappe.get_all(
+        "CyberVidya Other Fee Head Map",
+        filters={
+            "parent": institution_code,
+            "parenttype": "CyberVidya Other Fees Mapping",
+            "fee_label": key,
+        },
+        fields=["income_account"],
+        limit=1,
+    )
+    if not rows:
+        raise CyberVidyaRejection(
+            f"No fee-head mapping for institution {institution_code!r} + fee {fee_label!r} "
+            f"(normalised {key!r})."
+        )
+    account = rows[0].income_account
+    assert_leaf(account, sanstha_company)
+    return account
+
+
+def resolve_other_fees_ledger(
+    institution_code: str,
+    collection_type: str,
+    account_head: Optional[str],
+    sanstha_company: str,
+) -> str:
+    """Resolve the bank/cash DEBIT ledger (in the sanstha) for an other-fees
+    record via CyberVidya Other Fees Channel Map child rows.
+
+    bank: match the channel row by normalised Account-Head nomenclature.
+    cash: match by Account-Head if supplied; else fall back to the single Cash
+          channel row for this institution (reject if absent or ambiguous).
+    Miss -> reject.
+    """
+    channel = "Bank" if collection_type == "bank" else "Cash"
+    if account_head:
+        head = clean_jv_code(account_head)
+        rows = frappe.get_all(
+            "CyberVidya Other Fees Channel Map",
+            filters={
+                "parent": institution_code,
+                "parenttype": "CyberVidya Other Fees Mapping",
+                "channel_type": channel,
+                "cybervidya_account_head": head,
+            },
+            fields=["ledger_account"],
+            limit=1,
+        )
+        if not rows:
+            raise CyberVidyaRejection(
+                f"No {channel.lower()} channel mapping for institution "
+                f"{institution_code!r} + account head {account_head!r}."
+            )
+        ledger = rows[0].ledger_account
+    else:
+        rows = frappe.get_all(
+            "CyberVidya Other Fees Channel Map",
+            filters={
+                "parent": institution_code,
+                "parenttype": "CyberVidya Other Fees Mapping",
+                "channel_type": channel,
+            },
+            fields=["ledger_account"],
+            limit=2,
+        )
+        if not rows:
+            raise CyberVidyaRejection(
+                f"No {channel.lower()} channel mapping for institution {institution_code!r}."
+            )
+        if len(rows) > 1:
+            raise CyberVidyaRejection(
+                f"Multiple {channel.lower()} channel mappings for institution "
+                f"{institution_code!r}; specify bank_account_head to disambiguate."
+            )
+        ledger = rows[0].ledger_account
+
+    if collection_type == "bank":
+        assert_bank_leaf(ledger, sanstha_company)
+    else:
+        assert_leaf(ledger, sanstha_company)
+    return ledger
 
 
 def derive_receivable_head(company: str) -> str:

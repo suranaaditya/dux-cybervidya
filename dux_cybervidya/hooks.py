@@ -38,4 +38,7 @@ doc_events = {
 
 # Refresh the dashboard's institution<->company<->abbr cache after migrate
 # (mappings may have changed).
-after_migrate = ["dux_cybervidya.api.dashboard.refresh_maps"]
+after_migrate = [
+    "dux_cybervidya.api.dashboard.refresh_maps",
+    "dux_cybervidya.api.other_fees_dashboard.refresh_other_fees_maps",
+]

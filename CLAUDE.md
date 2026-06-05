@@ -322,22 +322,31 @@ dux_cybervidya/                        # repo root
       jv.py                            # post_daily_jv — inter-entity / write-off settlement
       utils.py                         # resolvers, validators, build_and_submit_je (P&L cost-center aware),
                                        #   JV helpers (clean_jv_code, resolve_jv_account), alerts, on_cancel
-      dashboard.py                     # read-only aggregation controllers + refresh_maps (after_migrate)
+      dashboard.py                     # daily-collection report controllers + refresh_maps (after_migrate)
+      other_fees.py                    # post_other_fees — head-wise fees into the sanstha (Cr income)
+      other_fees_dashboard.py          # other-fees report controllers (OF-/HISTOF- refs) + refresh
     dux_cybervidya/
       doctype/
         cybervidya_account_mapping/    # parent + validate controller
         cybervidya_bank_map/           # child table
         cybervidya_jv_map/             # global (jv_code, company) -> debit leaf routing + validate
+        cybervidya_other_fees_mapping/ # parent: college -> sanstha_company + fee-head & channel children
+        cybervidya_other_fee_head_map/      # child: normalised fee label -> income leaf (in sanstha)
+        cybervidya_other_fees_channel_map/  # child: account-head nomenclature -> bank/cash leaf (in sanstha)
       page/
         daily_fee_collection/          # Frappe Page UI (/app/daily-fee-collection)
+        other_fee_collection/          # Frappe Page UI (/app/other-fee-collection)
     public/
       css/daily_fee_collection.css     # dashboard styles (namespaced under .dux-cv-dash)
+      css/other_fee_collection.css     # other-fees report styles (namespaced under .dux-of-dash)
       js/daily_fee_collection.js
+      js/other_fee_collection.js
     fixtures/
       custom_field.json                # Journal Entry.custom_cybervidya_ref (unique)
       role.json                        # CyberVidya Viewer role
     scripts/
-      historical_import.py             # dev backfill tooling — NOT a production data path
+      historical_import.py             # dev backfill (collections) — NOT a production data path
+      other_fees_import.py             # dev backfill (other fees, tall Excel) — NOT a production data path
 ```
 
 \* `custom_docperm` is declared in `hooks.py` but **not yet exported** to
@@ -408,3 +417,65 @@ install so the `CyberVidya Viewer` role's Journal-Entry read perm travels (§12)
   (the cancelled predecessor keeps its `__CANCELLED__<name>` ref suffix).
 - Rejections: unmapped `(jv_code, company)`; mapped account is a group account;
   mapped account in the wrong company; `amount <= 0`; missing `jv_code`; bad `collection_date`.
+
+---
+
+## 14. Other Fees / Sanstha Collection (additive module)
+
+A separate flow for CyberVidya's **head-wise "other fees"** (Prospectus, Exam,
+Alumni, Convocation, …). Unlike collections (which park in a receivable and defer
+income), these are booked **directly as income into the college's parent
+TRUST/SANSTHA company**.
+
+| Channel | Debit (Dr) | Credit (Cr) |
+|---|---|---|
+| Bank | `{bank leaf in the SANSTHA company}` | `{fee-head income leaf in the SANSTHA company}` |
+| Cash | `{cash leaf in the SANSTHA company}` | `{fee-head income leaf in the SANSTHA company}` |
+
+- **Posting company = the sanstha**, resolved from the college via
+  `CyberVidya Other Fees Mapping` (e.g. GHRCE + GHRIETN → Ankush Shikshan Sanstha).
+  A JE is single-company, so both ledgers live in the sanstha's COA.
+- **One income leaf per fee head per sanstha** (LOCKED). Member-college labels
+  (messy/inconsistent) are normalised + folded to a canonical head; the
+  per-college split is surfaced only in the report (via the JE ref/remark), not
+  via separate ledgers.
+- **Endpoint** `dux_cybervidya.api.other_fees.post_other_fees`: payload
+  `reference` (caller-prefixed `OF-`), `institution` (college), `fee_head` (full
+  label), `collection_type` (bank|cash), `bank_account_head` (iff bank), `amount`,
+  `collection_date`, `remarks?`. Resolvers `resolve_sanstha_company` /
+  `resolve_other_fees_ledger` / `resolve_fee_account`. Same idempotency /
+  response / alerts as the others; reuses `custom_cybervidya_ref` and the
+  `on_cancel` hook (NO new field). The income (Cr) line is auto-cost-centered by
+  `build_and_submit_je`.
+- **DocTypes:** `CyberVidya Other Fees Mapping` (parent: institution →
+  `sanstha_company`) + children `CyberVidya Other Fee Head Map` (normalised label
+  → income leaf) and `CyberVidya Other Fees Channel Map` (account-head
+  nomenclature → bank/cash leaf). Validate on the parent.
+- **Account creation:** auto-created under a dedicated income group
+  `CyberVidya Other Fees - {sansthaAbbr}` per sanstha, plus missing bank/cash
+  leaves — by the importer's execute phase, never on the hot path.
+- **Historical importer** `scripts/other_fees_import.py` (tall-Excel parser;
+  `--mode dryrun|execute`). Idempotency ref
+  `HISTOF-{college}-{canonicalKey}-{token}-{YYYYMMDD}`. Dry-run prints the
+  canonical-head plan, unmapped labels, and per-sheet reconciliation.
+- **Report:** Frappe Page `/app/other-fee-collection`
+  (`api/other_fees_dashboard.py`, `public/js+css/other_fee_collection.*`,
+  namespaced `.dux-of-dash`). Detects `OF-`/`HISTOF-` refs; the daily dashboard
+  excludes them (no receivable line). Shares the `CyberVidya Viewer` Journal-Entry
+  read-perm dependency (§12 item 5).
+
+### Open items (other-fees)
+
+1. **GHRCCST** is not one of the 18 known CV codes — sanstha unknown → **parked**
+   (52 rows / ~Rs 1.13 L) until RGI identifies it.
+2. **Canonical-head sign-off:** RGI confirms the generated per-sanstha income-leaf
+   list + synonym folding (e.g. "Exam/Examination" → one head; typo "Propspectus"
+   → Prospectus) before `--mode execute`.
+3. **Dev read-only checks before execute:** exact sanstha Company name/abbr; an
+   Indirect Income group; a usable cost center (`Main - {abbr}` or default — the
+   highest-impact dependency for the income line); FY coverage for the dates;
+   which Excel bank acct-nos already exist as sanstha leaves.
+4. **Fee-head root_type:** assumed Income; the mapping warns (doesn't block) on a
+   non-Income leaf — confirm a few (e.g. "Alumni Fund") aren't liabilities.
+5. **Live payload contract** with CyberVidya: full fee label + bank Account-Head
+   nomenclature + stable per-record `OF-` reference (distinct cash vs bank same day).
