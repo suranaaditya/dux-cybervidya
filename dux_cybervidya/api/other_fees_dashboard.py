@@ -336,4 +336,104 @@ def feed(filters=None, limit=60):
     limit = max(1, min(cint(limit) or 60, 200))
     rows = _fetch(f)
     rows.sort(key=lambda r: (r["dt"] or "", r["name"]), reverse=True)
-    return rows[:limit]
+    rows = rows[:limit]
+    # Cancelled lens: for each cancelled JE, find the active re-post that holds
+    # the freed base reference (on_cancel suffixes the cancelled ref with
+    # __CANCELLED__<name>, so the live re-post reuses the original ref).
+    for r in rows:
+        r["replaced_by_ref"] = None
+        if r["docstatus"] == 2 and r["ref"]:
+            base = r["ref"].split("__CANCELLED__")[0]
+            r["replaced_by_ref"] = frappe.db.get_value(
+                "Journal Entry",
+                {"custom_cybervidya_ref": base, "docstatus": 1},
+                "custom_cybervidya_ref",
+            )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# PDF export (wkhtmltopdf via frappe.utils.pdf.get_pdf). "Rs." (not the rupee
+# glyph) keeps the PDF font-safe; the on-screen report uses the glyph fine.
+# ---------------------------------------------------------------------------
+def _rs(n):
+    """Rupees, Indian digit grouping, e.g. Rs. 1,88,42,283."""
+    n = int(n or 0)
+    sign, s = ("-" if n < 0 else ""), str(abs(n))
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        head = re.sub(r"(\d)(?=(\d\d)+$)", r"\1,", head)
+        s = head + "," + tail
+    return f"{sign}Rs. {s}"
+
+
+@frappe.whitelist()
+def other_fees_pdf(filters=None):
+    """One-page summary PDF for the current filter scope. Opened directly as a
+    download link from the report (GET)."""
+    _guard()
+    from frappe.utils.pdf import get_pdf
+
+    f = _parse_filters(filters)
+    s = summary(filters)
+    san = by_sanstha(filters)
+    head = by_fee_head(filters)
+    rec = reconcile(filters)
+
+    def tbl(title, cols, rows):
+        th = "".join(
+            f'<th style="text-align:{"right" if c[2] else "left"}">{c[0]}</th>' for c in cols
+        )
+        trs = "".join(
+            "<tr>" + "".join(
+                f'<td style="text-align:{"right" if c[2] else "left"}'
+                f'{";font-family:monospace" if c[2] else ""}">{c[1](row)}</td>'
+                for c in cols
+            ) + "</tr>"
+            for row in rows
+        )
+        return (f'<h3>{title}</h3><table><thead><tr>{th}</tr></thead>'
+                f'<tbody>{trs or "<tr><td>No data</td></tr>"}</tbody></table>')
+
+    scope = []
+    if f["sansthas"]:
+        scope.append("Sanstha: " + ", ".join(f["sansthas"]))
+    if f["institutions"]:
+        scope.append("College: " + ", ".join(f["institutions"]))
+    if f["channel"] != "all":
+        scope.append("Channel: " + f["channel"])
+    if f["source"] != "all":
+        scope.append("Source: " + f["source"])
+    if f["status"] != "active":
+        scope.append("Status: " + f["status"])
+    scope_html = " &nbsp;|&nbsp; ".join(scope) or "All sansthas / colleges"
+
+    html = f"""
+    <style>
+      body {{ font-family: Helvetica, Arial, sans-serif; color:#111; font-size:12px; }}
+      h1 {{ font-size:18px; margin:0 0 2px; }}
+      h3 {{ font-size:13px; margin:18px 0 6px; border-bottom:1px solid #ddd; padding-bottom:3px; }}
+      .sub {{ color:#666; font-size:11px; margin-bottom:10px; }}
+      table {{ width:100%; border-collapse:collapse; }}
+      th,td {{ padding:5px 8px; border-bottom:1px solid #eee; }}
+      th {{ background:#f5f6f8; font-size:10px; text-transform:uppercase; color:#666; }}
+      .card {{ display:inline-block; border:1px solid #e5e7eb; border-radius:8px; padding:7px 14px; margin:0 8px 4px 0; }}
+      .card .k {{ font-size:10px; color:#888; text-transform:uppercase; }}
+      .card .v {{ font-size:15px; font-weight:bold; font-family:monospace; }}
+    </style>
+    <h1>Other Fees / Sanstha Collection</h1>
+    <div class="sub">{f['date_from']} &rarr; {f['date_to']} &nbsp;|&nbsp; {scope_html}</div>
+    <div>
+      <span class="card"><div class="k">Total</div><div class="v">{_rs(s['total'])}</div></span>
+      <span class="card"><div class="k">JEs</div><div class="v">{s['count']}</div></span>
+      <span class="card"><div class="k">Bank</div><div class="v">{_rs(s['bank']['total'])}</div></span>
+      <span class="card"><div class="k">Cash</div><div class="v">{_rs(s['cash']['total'])}</div></span>
+    </div>
+    {tbl("By sanstha", [("Sanstha", lambda r: frappe.utils.escape_html(r['company']), 0), ("JEs", lambda r: r['count'], 1), ("Collected", lambda r: _rs(r['total']), 1)], san)}
+    {tbl("By fee head", [("Fee head", lambda r: frappe.utils.escape_html(r['fee_head'] or '—'), 0), ("JEs", lambda r: r['count'], 1), ("Collected", lambda r: _rs(r['total']), 1)], head)}
+    {tbl("By college (reconciliation)", [("College", lambda r: frappe.utils.escape_html(r['institution'] or '—'), 0), ("Sanstha", lambda r: frappe.utils.escape_html(r['sanstha'] or '—'), 0), ("Live", lambda r: _rs(r['live']), 1), ("Historical", lambda r: _rs(r['historical']), 1), ("Total", lambda r: _rs(r['total']), 1)], rec)}
+    <div class="sub" style="margin-top:16px">Generated by Dux CyberVidya &bull; other-fees report</div>
+    """
+    frappe.local.response.filename = f"other-fees-{f['date_from']}-to-{f['date_to']}.pdf"
+    frappe.local.response.filecontent = get_pdf(html)
+    frappe.local.response.type = "pdf"
