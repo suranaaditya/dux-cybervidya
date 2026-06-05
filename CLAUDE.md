@@ -130,6 +130,27 @@ BACK TO students. One CyberVidya refund record = one request = one JE.
 - The CyberVidya Account Mapping rows and the bank/cash leaves are
   **direction-agnostic**; no DocType change is needed for refunds.
 
+### JV channel (inter-entity / write-off settlements — see §6 `post_daily_jv`)
+
+A JV settles a student receivable via an **inter-entity transfer or write-off**
+rather than a bank/cash deposit (CyberVidya's "Jv Institute Others" columns).
+
+| Channel | Debit (Dr) | Credit (Cr) |
+|---|---|---|
+| JV | `{account resolved from (jv_code, company) via CyberVidya JV Map}` | `Student Receivable Cybervidya - {ABBR}` |
+
+- The debit account is **resolved from the mapping** (§5 `CyberVidya JV Map`),
+  not derived — it varies by JV code (a counterparty/“due from” ledger, an exam
+  account, a write-off expense, etc.). Must be a non-group leaf in the **same
+  company** as the receivable (a JE is single-company).
+- An ERPNext JE cannot span companies, so this is NOT a true inter-company
+  posting — the "source entity" is represented by an account inside the
+  receiving institution's own COA.
+- **Dev seed note:** JV codes are currently mapped to a placeholder
+  `Cybervidya JV Suspense - {ABBR}` leaf per company so the client can test the
+  endpoint; RGI Finance must repoint each `(jv_code, company)` row to the real
+  inter-entity / write-off ledger before go-live.
+
 ---
 
 ## 4. Custom field on Journal Entry (idempotency key)
@@ -173,6 +194,21 @@ Cash needs **no** mapping row — the cash head is derived from the company.
 This DocType is the destination for the CyberVidya mapping worksheet: parent rows =
 (their institution code ↔ our company); bank child rows = (their bank code ↔ our ledger).
 
+### `CyberVidya JV Map` (standalone — one global table for JV-code routing)
+
+| Field | Type | Notes |
+|---|---|---|
+| `cybervidya_jv_code` | Data | Reqd. The JV nomenclature CyberVidya sends (the "Jv Institute Others" label). Stored cleaned (NBSP→space, collapsed, trimmed) via `utils.clean_jv_code`. |
+| `company` | Link → Company | Reqd. The receiving institution's company; the debit account lives in this company's COA. |
+| `account` | Link → Account | Reqd. Non-group leaf in `company` — the JV debit ledger. |
+| `description` | Small Text | Optional note. |
+
+**`validate` controller:** company valid; `account` is non-group leaf with
+`company` matching; `(cybervidya_jv_code, company)` unique. A single global
+table (not nested per-institution) — the `company` column lets a shared JV code
+(e.g. "Other", "Ankush Shikshan Sanstha") resolve to the correct per-company
+ledger. Resolver `utils.resolve_jv_account(jv_code, company)`.
+
 ---
 
 ## 6. Endpoint
@@ -183,6 +219,11 @@ This DocType is the destination for the CyberVidya mapping worksheet: parent row
     Accounting mirror of collection; same payload shape, same response envelope,
     same idempotency mechanics, same auth, same alerts. See §3 refund table for
     the Dr/Cr swap.
+  - **`dux_cybervidya.api.jv.post_daily_jv`** — inter-entity / write-off
+    settlement of a receivable. Payload has `jv_code` (not `collection_type`/`bank`):
+    `reference`, `institution`, `jv_code`, `amount`, `collection_date`, `remarks?`.
+    Dr = `CyberVidya JV Map`-resolved account, Cr = `Student Receivable Cybervidya - {ABBR}`.
+    Same idempotency / response / auth / alerts as the others.
 - Auth: a **dedicated integration user** (NOT System Manager) with a tightly-scoped
   custom role. API key + secret in header: `Authorization: token <key>:<secret>`. HTTPS only.
 
@@ -271,19 +312,37 @@ of emails). When unset, rejections only land in the Error Log.
 ## 10. Target app structure
 
 ```
-dux_cybervidya/
-  hooks.py                      # fixtures (custom_field), doc_events if needed
-  api/
-    __init__.py
-    collection.py               # @frappe.whitelist() post_daily_collection
-    utils.py                    # resolve company/ledger, build_je, existence checks, alerts
-  dux_cybervidya/
-    doctype/
-      cybervidya_account_mapping/   # parent + validate controller
-      cybervidya_bank_map/          # child table
-  fixtures/
-    custom_field.json           # Journal Entry.custom_cybervidya_ref (unique)
+dux_cybervidya/                        # repo root
+  dux_cybervidya/                      # Python package
+    hooks.py                           # fixtures (custom_field, role, custom_docperm*); on_cancel; after_migrate
+    api/
+      __init__.py
+      collection.py                    # @frappe.whitelist() post_daily_collection — money IN
+      refund.py                        # post_daily_refund — money OUT (mirror of collection)
+      jv.py                            # post_daily_jv — inter-entity / write-off settlement
+      utils.py                         # resolvers, validators, build_and_submit_je (P&L cost-center aware),
+                                       #   JV helpers (clean_jv_code, resolve_jv_account), alerts, on_cancel
+      dashboard.py                     # read-only aggregation controllers + refresh_maps (after_migrate)
+    dux_cybervidya/
+      doctype/
+        cybervidya_account_mapping/    # parent + validate controller
+        cybervidya_bank_map/           # child table
+        cybervidya_jv_map/             # global (jv_code, company) -> debit leaf routing + validate
+      page/
+        daily_fee_collection/          # Frappe Page UI (/app/daily-fee-collection)
+    public/
+      css/daily_fee_collection.css     # dashboard styles (namespaced under .dux-cv-dash)
+      js/daily_fee_collection.js
+    fixtures/
+      custom_field.json                # Journal Entry.custom_cybervidya_ref (unique)
+      role.json                        # CyberVidya Viewer role
+    scripts/
+      historical_import.py             # dev backfill tooling — NOT a production data path
 ```
+
+\* `custom_docperm` is declared in `hooks.py` but **not yet exported** to
+`fixtures/custom_docperm.json`; export + commit it before the Frappe Cloud
+install so the `CyberVidya Viewer` role's Journal-Entry read perm travels (§12).
 
 ---
 
@@ -307,9 +366,22 @@ dux_cybervidya/
 4. **Final endpoint path** + create the dedicated integration user with scoped role.
 5. **Frappe Cloud install** — add app to the FC bench for `ghraisoni.frappe.cloud`
    (GitHub repo access for FC; mirror the dux_voucher / dux_portal deploy flow).
+   **Before install: export + commit `fixtures/custom_docperm.json`** — the
+   `Custom DocPerm` fixture is declared in `hooks.py` but never exported, so the
+   `CyberVidya Viewer` role's read access to Journal Entry will not travel otherwise.
 6. **Receivable head placement sweep** — see §3 open question; confirm across all 59
    companies whether `Student Receivable Cybervidya - {ABBR}` sits under Current
    Assets or Current Liabilities, and reconcile with the year-end JE expectation.
+7. **JV Map finalization** — the global `CyberVidya JV Map` is seeded on dev with
+   real ledgers for the mapped JV codes and a placeholder `Cybervidya JV Suspense -
+   {ABBR}` leaf for the rest. RGI Finance must repoint every suspense `(jv_code,
+   company)` row to its real inter-entity "Due from / Due to" or write-off ledger,
+   and confirm the open questions (the generic "Other" code, the GHRUA self-
+   reference, the same-trust vs cross-trust rule, the write-off ledger) before the
+   JV backlog is posted to real accounts. Tracking PDF: `~/Downloads/CyberVidya_JV_Open_Items_RGI.pdf`.
+8. **JV historical backlog** — the parked "Jv Institute Others" backlog can be
+   posted through `post_daily_jv` (via `scripts/historical_import.py`) once item 7
+   is resolved; until then it would book real amounts against suspense placeholders.
 
 ---
 
@@ -323,3 +395,16 @@ dux_cybervidya/
   group account; `amount <= 0`; bad `collection_type`; `bank` missing on bank type.
 - Same company, same day, two banks (distinct refs) → two JEs.
 - Same company, same day, cash + bank (distinct refs) → two JEs.
+
+### JV channel (`post_daily_jv`)
+
+- Mapped `jv_code` → `created`; Dr = the `CyberVidya JV Map` account for
+  `(jv_code, company)`, Cr = `Student Receivable Cybervidya - {ABBR}`, `custom_cybervidya_ref` set.
+- JV whose mapped account is a P&L (Income/Expense — e.g. a write-off) ledger →
+  the P&L line carries the company's default/main Cost Center; the balance-sheet
+  (receivable) line carries none.
+- Duplicate (same `reference`) → `already_exists`, no second JE.
+- Cancel the JV JE, then retry the same `reference` → fresh `created` JE
+  (the cancelled predecessor keeps its `__CANCELLED__<name>` ref suffix).
+- Rejections: unmapped `(jv_code, company)`; mapped account is a group account;
+  mapped account in the wrong company; `amount <= 0`; missing `jv_code`; bad `collection_date`.

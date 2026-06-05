@@ -1,0 +1,92 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "hash",
+ "creation": "2026-06-02 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "cybervidya_jv_code",
+  "company",
+  "account",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "cybervidya_jv_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "CyberVidya JV Code",
+   "reqd": 1,
+   "description": "The JV nomenclature CyberVidya sends (e.g. the 'Jv Institute Others' column label)."
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company (receiving institution)",
+   "options": "Company",
+   "reqd": 1,
+   "description": "The company whose chart of accounts the debit account lives in. The JV credits Student Receivable Cybervidya - {ABBR} of this company."
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Debit Account (in company's COA)",
+   "options": "Account",
+   "reqd": 1,
+   "description": "Non-group leaf account in the company above. Debited when a JV with this code is posted; the source/counterparty or write-off ledger."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description / Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-02 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Dux CyberVidya",
+ "name": "CyberVidya JV Map",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

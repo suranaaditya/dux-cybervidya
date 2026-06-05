@@ -90,6 +90,39 @@ def _require_str(raw: dict, key: str) -> str:
     return val.strip()
 
 
+def validate_jv_payload(raw: dict) -> dict:
+    """Validate a JV (journal-voucher / inter-entity) payload. Unlike a
+    collection there is no bank/cash channel — instead a `jv_code` resolves
+    (with the company) to a debit ledger via CyberVidya JV Map. Returns a
+    normalised dict."""
+    reference = _require_str(raw, "reference")
+    institution = _require_str(raw, "institution")
+    jv_code = _require_str(raw, "jv_code")
+
+    amount = flt(raw.get("amount"))
+    if amount <= 0:
+        raise CyberVidyaRejection(f"amount must be > 0, got {raw.get('amount')!r}.")
+
+    collection_date = _require_str(raw, "collection_date")
+    if not ISO_DATE_RE.match(collection_date):
+        raise CyberVidyaRejection(
+            f"collection_date must be YYYY-MM-DD, got {collection_date!r}."
+        )
+    try:
+        getdate(collection_date)
+    except Exception:
+        raise CyberVidyaRejection(f"collection_date is not a valid date: {collection_date!r}.")
+
+    return {
+        "reference": reference,
+        "institution": institution,
+        "jv_code": jv_code,
+        "amount": amount,
+        "collection_date": collection_date,
+        "remarks": (raw.get("remarks") or None),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Resolvers
 # ---------------------------------------------------------------------------
@@ -130,6 +163,32 @@ def resolve_bank_ledger(institution_code: str, bank_code: str, company: str) -> 
     bank_account = rows[0].bank_account
     assert_bank_leaf(bank_account, company)
     return bank_account
+
+
+def clean_jv_code(s) -> str:
+    """Normalise a JV code: NBSP -> space, collapse runs of whitespace, strip.
+    The CyberVidya JV Map stores codes in this form and the resolver cleans
+    the incoming value the same way, so minor spacing differences still match."""
+    return re.sub(r"\s+", " ", str(s or "").replace("\xa0", " ")).strip()
+
+
+def resolve_jv_account(jv_code: str, company: str) -> str:
+    """Resolve a JV code + company to its debit leaf account via the global
+    CyberVidya JV Map. Miss -> reject; never fall back to a default account."""
+    code = clean_jv_code(jv_code)
+    rows = frappe.get_all(
+        "CyberVidya JV Map",
+        filters={"cybervidya_jv_code": code, "company": company},
+        fields=["account"],
+        limit=1,
+    )
+    if not rows:
+        raise CyberVidyaRejection(
+            f"No JV mapping for code {code!r} in company {company!r}."
+        )
+    account = rows[0].account
+    assert_leaf(account, company)
+    return account
 
 
 def derive_receivable_head(company: str) -> str:
@@ -224,16 +283,39 @@ def build_and_submit_je(
     je.user_remark = remarks or f"CyberVidya collection {reference}"
     je.custom_cybervidya_ref = reference
 
-    je.append("accounts", {
-        "account": debit_account,
-        "debit_in_account_currency": amount,
-        "credit_in_account_currency": 0,
-    })
-    je.append("accounts", {
-        "account": credit_account,
-        "debit_in_account_currency": 0,
-        "credit_in_account_currency": amount,
-    })
+    # P&L (Income/Expense) account lines require a Cost Center in ERPNext.
+    # Balance-sheet lines (bank, cash, receivable, payable, due-from) do not.
+    # JV write-offs hit an Expense account, so resolve a cost center and attach
+    # it only to the P&L line(s). Prefer Company.cost_center; fall back to the
+    # company's main non-group cost center.
+    default_cc = frappe.get_cached_value("Company", company, "cost_center")
+    if not default_cc:
+        abbr = frappe.get_cached_value("Company", company, "abbr")
+        default_cc = (
+            frappe.db.get_value("Cost Center", f"Main - {abbr}", "name")
+            or frappe.db.get_value(
+                "Cost Center", {"company": company, "is_group": 0}, "name"
+            )
+        )
+
+    def _line(account, dr, cr):
+        row = {
+            "account": account,
+            "debit_in_account_currency": dr,
+            "credit_in_account_currency": cr,
+        }
+        root = frappe.get_cached_value("Account", account, "root_type")
+        if root in ("Income", "Expense"):
+            if not default_cc:
+                raise CyberVidyaRejection(
+                    f"P&L account {account!r} needs a cost center but company "
+                    f"{company!r} has no default or non-group cost center."
+                )
+            row["cost_center"] = default_cc
+        return row
+
+    je.append("accounts", _line(debit_account, amount, 0))
+    je.append("accounts", _line(credit_account, 0, amount))
 
     je.insert(ignore_permissions=False)
     je.submit()
